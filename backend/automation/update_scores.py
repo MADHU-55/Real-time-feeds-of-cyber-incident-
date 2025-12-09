@@ -1,5 +1,5 @@
 # backend/automation/update_scores.py
-from ..database import init_db, SessionLocal
+from backend.database import init_db, SessionLocal
 from ..models import Incident
 from sqlalchemy.orm import Session
 

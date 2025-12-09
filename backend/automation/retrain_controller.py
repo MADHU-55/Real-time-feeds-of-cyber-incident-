@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import subprocess
 import json
 from pathlib import Path
-from ..database import init_db, SessionLocal
+from backend.database import init_db, SessionLocal
 from ..models import ModelMetrics
 
 ML_DIR = Path(__file__).resolve().parent.parent / "ml"

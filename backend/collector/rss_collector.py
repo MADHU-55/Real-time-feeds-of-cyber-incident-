@@ -10,7 +10,7 @@ Simple RSS collector:
 import feedparser
 from datetime import datetime
 from sqlalchemy.exc import IntegrityError
-from ..database import SessionLocal, init_db
+from backend.database import init_db, SessionLocal
 from ..models import Incident
 import time
 import html
