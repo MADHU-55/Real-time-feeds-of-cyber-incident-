@@ -1,0 +1,28 @@
+name: Retrain Controller
+
+on:
+  schedule:
+    - cron: '0 2 * * *'       # every day at 2 AM UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backend/ml/**'
+      - 'backend/collector/**'
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run retrain controller
+        run: python backend/automation/retrain_controller.py
