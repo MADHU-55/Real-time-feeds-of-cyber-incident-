@@ -1,113 +1,129 @@
-# backend/app.py
-"""
-Flask application serving dashboard static files and JSON endpoints.
-Run with: python -m backend.app  OR python -m backend.app:create_app
-"""
-
-from datetime import datetime, timedelta, date
-from flask import Flask, jsonify, send_from_directory
+from datetime import datetime
+from flask import Flask, jsonify, send_from_directory, request
 from flask_cors import CORS
+from datetime import date, datetime, timedelta
 from sqlalchemy import func, case
-from .database import init_db, SessionLocal
-from .models import Incident, ModelMetrics
-
+from sqlalchemy import and_
 import os
+import hashlib
+import requests
+import json
+from pathlib import Path
 
-STATIC_FOLDER = os.path.join(os.path.dirname(__file__), "static")
+from .database import init_db, SessionLocal
+from .models import Incident
 
+# ---------------- CONFIG ----------------
+BASE_DIR = os.path.dirname(__file__)
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+ML_DIR = Path(BASE_DIR) / "ml"
+DRIFT_STATE = ML_DIR / "drift_state.json"
 
+app = Flask(
+    __name__,
+    static_folder="static",
+    static_url_path="/static"
+)
+
+CORS(app)
+init_db()
+
+# ---------------- DB SESSION (FIXED) ----------------
 def get_db():
+    return SessionLocal()
+
+# ---------------- FRONTEND ROUTES ----------------
+@app.route("/")
+@app.route("/live-feed")
+@app.route("/apt-groups")
+@app.route("/sectors")
+@app.route("/trends")
+@app.route("/analytics")
+@app.route("/reports")
+def index():
+    return send_from_directory(STATIC_DIR, "index.html")
+
+# ---------------- DASHBOARD APIs ----------------
+@app.route("/api/dashboard/summary")
+def dashboard_summary():
     db = SessionLocal()
+
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    today_end = datetime.combine(date.today(), datetime.max.time())
+
+    total_today = db.query(Incident).filter(
+        Incident.timestamp.between(today_start, today_end)
+    ).count()
+
+    critical_today = db.query(Incident).filter(
+        Incident.timestamp.between(today_start, today_end),
+        Incident.priority.in_(["HIGH", "CRITICAL"])
+    ).count()
+
+    affected_sectors = db.query(Incident.sector).filter(
+        Incident.sector.isnot(None)
+    ).distinct().count()
+
+    mitigated = db.query(Incident).filter(
+        Incident.is_mitigated.is_(True)
+    ).count()
+
+    db.close()
+
+    return jsonify({
+        "total_threats_today": total_today,
+        "critical_incidents": critical_today,
+        "affected_sectors": affected_sectors,
+        "threats_mitigated": mitigated
+    })
+@app.route("/api/incidents/live")
+def live_incidents():
+    db = SessionLocal()
+
+    rows = (
+        db.query(Incident)
+        .order_by(Incident.timestamp.desc())
+        .limit(50)
+        .all()
+    )
+
+    return jsonify([
+        {
+            "title": i.title,
+            "summary": i.summary,
+            "timestamp": i.timestamp.isoformat() if i.timestamp else None,
+            "priority": i.priority or "LOW",
+            "url": i.url,  # ✅ correct column
+        }
+        for i in rows
+    ])
+
+@app.route("/api/analytics/threat-distribution")
+def threat_distribution():
+    db = get_db()
     try:
-        yield db
+        rows = (
+            db.query(Incident.category, func.count(Incident.id))
+            .group_by(Incident.category)
+            .all()
+        )
+
+        return jsonify([
+            {"label": c or "Unknown", "value": int(n)}
+            for c, n in rows
+        ])
     finally:
         db.close()
 
-
-def create_app():
-    app = Flask(__name__, static_folder=STATIC_FOLDER, static_url_path="/static")
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
-
-    # ensure DB/tables exist
-    init_db()
-
-    @app.route("/")
-    def index():
-        return send_from_directory(app.static_folder, "index.html")
-
-    @app.route("/api/dashboard/summary")
-    def dashboard_summary():
-        db = next(get_db())
-        today = date.today()
-        start = datetime.combine(today, datetime.min.time())
-        end = datetime.combine(today, datetime.max.time())
-
-        total_today = (
-            db.query(Incident)
-            .filter(Incident.timestamp >= start, Incident.timestamp <= end)
-            .count()
-        )
-        critical_incidents = db.query(Incident).filter(Incident.priority.in_(["HIGH", "CRITICAL"])).count()
-        affected_sectors = db.query(Incident.sector).filter(Incident.sector.isnot(None)).distinct().count()
-        mitigated = db.query(Incident).filter(Incident.is_mitigated.is_(True)).count()
-
-        return jsonify(
-            {
-                "total_threats_today": total_today,
-                "critical_incidents": critical_incidents,
-                "affected_sectors": affected_sectors,
-                "threats_mitigated": mitigated,
-            }
-        )
-
-    @app.route("/api/incidents/live")
-    def live_incidents():
-        db = next(get_db())
-        rows = (
-            db.query(Incident)
-            .order_by(Incident.timestamp.desc().nullslast(), Incident.id.desc())
-            .limit(100)
-            .all()
-        )
-        data = []
-        for inc in rows:
-            data.append(
-                {
-                    "id": inc.id,
-                    "external_id": inc.external_id,
-                    "title": inc.title,
-                    "summary": inc.summary,
-                    "description": inc.description,
-                    "timestamp": inc.timestamp.isoformat() if inc.timestamp else None,
-                    "priority": inc.priority,
-                    "category": inc.category,
-                    "sector": inc.sector,
-                    "anomaly_score": inc.anomaly_score,
-                    "useful_score": inc.useful_score,
-                    "threat_score": inc.threat_score,
-                    "status": inc.status,
-                    "source": inc.source,
-                    "url": inc.url,
-                }
-            )
-        return jsonify(data)
-
-    @app.route("/api/analytics/threat-distribution")
-    def threat_distribution():
-        db = next(get_db())
-        rows = db.query(Incident.category, func.count(Incident.id)).group_by(Incident.category).all()
-        data = [{"label": (c or "Unknown"), "value": int(n)} for c, n in rows]
-        return jsonify(data)
-
-    @app.route("/api/analytics/trends")
-    def threat_trends():
-        db = next(get_db())
-        # last 14 days aggregated by date
+@app.route("/api/analytics/trends")
+def threat_trends():
+    db = get_db()
+    try:
         rows = (
             db.query(
-                func.date(Incident.timestamp).label("day"),
-                func.count(Incident.id).label("detected"),
-                func.sum(case((Incident.is_mitigated == True, 1), else_=0)).label("mitigated"),
+                func.date(Incident.timestamp),
+                func.count(Incident.id),
+                func.sum(case((Incident.is_mitigated == True, 1), else_=0))
             )
             .group_by(func.date(Incident.timestamp))
             .order_by(func.date(Incident.timestamp))
@@ -115,59 +131,57 @@ def create_app():
             .all()
         )
 
-        labels = []
-        detected = []
-        mitigated = []
-        for day, det, mit in rows:
-            # day may be string or date depending on SQLite; normalize
-            if hasattr(day, "isoformat"):
-                labels.append(day.isoformat())
-            else:
-                labels.append(str(day))
-            detected.append(int(det or 0))
+        labels, detected, mitigated = [], [], []
+        for d, det, mit in rows:
+            labels.append(str(d))
+            detected.append(int(det))
             mitigated.append(int(mit or 0))
 
-        return jsonify(
-            {
-                "labels": labels,
-                "datasets": [
-                    {"label": "Detected", "values": detected},
-                    {"label": "Mitigated", "values": mitigated},
-                ],
-            }
-        )
+        return jsonify({
+            "labels": labels,
+            "datasets": [
+                {"label": "Detected", "values": detected},
+                {"label": "Mitigated", "values": mitigated},
+            ],
+        })
+    finally:
+        db.close()
 
-    @app.route("/api/analytics/advanced")
-    def advanced_analytics():
-        db = next(get_db())
-        last_metric = db.query(ModelMetrics).order_by(ModelMetrics.timestamp.desc()).first()
-        ml_accuracy = float(last_metric.accuracy) if last_metric and last_metric.accuracy else 0.0
+# ---------------- ML STATUS ----------------
+@app.route("/api/ml/status")
+def ml_status():
+    if DRIFT_STATE.exists():
+        state = json.loads(DRIFT_STATE.read_text())
+        return jsonify({
+            "status": "Active",
+            "drift_detected": state.get("drift_detected", False)
+        })
+    return jsonify({"status": "Not Trained", "drift_detected": False})
 
-        week_ago = datetime.utcnow() - timedelta(days=7)
-        anomalies = (
-            db.query(Incident).filter(Incident.anomaly_score.isnot(None)).filter(Incident.timestamp >= week_ago).filter(Incident.anomaly_score > 0.5).count()
-        )
+# ---------------- HIBP PASSWORD CHECK (FIXED) ----------------
+@app.route("/api/security/password-check", methods=["POST"])
+def password_check():
+    data = request.get_json(silent=True)
+    if not data or "password" not in data:
+        return jsonify({"error": "Password required"}), 400
 
-        return jsonify({"ml_accuracy": ml_accuracy, "anomalies_detected": anomalies})
+    password = data["password"]
 
-    @app.route("/api/ml/drift-status")
-    def drift_status():
-        db = next(get_db())
-        last_metric = db.query(ModelMetrics).order_by(ModelMetrics.timestamp.desc()).first()
-        if not last_metric:
-            return jsonify({"model_version": None, "drift_detected": False})
-        return jsonify(
-            {
-                "model_version": last_metric.model_version,
-                "drift_detected": last_metric.drift_detected,
-                "drift_score": last_metric.drift_score,
-                "timestamp": last_metric.timestamp.isoformat() if last_metric.timestamp else None,
-            }
-        )
+    sha1 = hashlib.sha1(password.encode()).hexdigest().upper()
+    prefix, suffix = sha1[:5], sha1[5:]
 
-    return app
+    r = requests.get(
+        f"https://api.pwnedpasswords.com/range/{prefix}",
+        headers={"User-Agent": "CyberNow"}
+    )
 
+    for line in r.text.splitlines():
+        h, count = line.split(":")
+        if h == suffix:
+            return jsonify({"pwned": True, "count": int(count)})
 
+    return jsonify({"pwned": False, "count": 0})
+
+# ---------------- RUN ----------------
 if __name__ == "__main__":
-    app = create_app()
     app.run(debug=True)

@@ -1,100 +1,105 @@
-# backend/collector/rss_collector.py
 """
-Simple RSS collector:
-- uses feedparser to fetch several feeds
-- runs simple normalization
-- stores new incidents into SQLite via SQLAlchemy (models.Incident)
-- uses a simple ML model if available to classify priority/anomaly (optional)
+RSS Collector with:
+- Govt + trusted sources
+- Deduplication
+- Optional ML-based priority prediction
+- Retention policy (1 month / 2 months for HIGH/CRITICAL)
 """
 
 import feedparser
-from datetime import datetime
-from sqlalchemy.exc import IntegrityError
-from backend.database import init_db, SessionLocal
-from ..models import Incident
-import time
 import html
+import time
 import os
+from datetime import datetime, timedelta
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, or_
+
+from backend.database import init_db, SessionLocal
+from backend.models import Incident
+
 import joblib
 
-# feeds list - add government and reputable sources here
+# ================== FEEDS ==================
 FEEDS = [
-    # CERT India RSS / advisories
     "https://www.cert-in.org.in/rss.xml",
-    # National Cyber Security Centre (example)
-    "https://www.ncsc.gov.uk/rss/news",
-    # Indian government press release (example)
     "https://pib.gov.in/AllReleaseRSS.aspx?Language=0",
-    # cyber security news sites
-    "https://threatpost.com/feed/",
+    "https://www.ncsc.gov.uk/rss/news",
     "https://www.bleepingcomputer.com/feed/",
-    # generic news (filtering later)
-    "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
+    "https://threatpost.com/feed/",
 ]
 
-# optional model artifacts
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "ml", "model.joblib")
-VECT_PATH = os.path.join(os.path.dirname(__file__), "..", "ml", "vectorizer.joblib")
-IF_PATH = os.path.join(os.path.dirname(__file__), "..", "ml", "isolation_forest.joblib")
+# ================== ML ARTIFACTS (OPTIONAL) ==================
+BASE_DIR = os.path.dirname(__file__)
+MODEL_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "ml"))
 
-clf = None
-vec = None
-iforest = None
+MODEL_PATH = os.path.join(MODEL_DIR, "model.joblib")
+VECT_PATH = os.path.join(MODEL_DIR, "vectorizer.joblib")
+
+clf = vec = None
+
 try:
     if os.path.exists(MODEL_PATH):
         clf = joblib.load(MODEL_PATH)
     if os.path.exists(VECT_PATH):
         vec = joblib.load(VECT_PATH)
-    if os.path.exists(IF_PATH):
-        iforest = joblib.load(IF_PATH)
 except Exception:
-    clf = None
-    vec = None
-    iforest = None
+    clf = vec = None
 
-
-def normalize_text(s):
+# ================== HELPERS ==================
+def clean_text(s):
     if not s:
         return ""
-    s = html.unescape(s)
-    return s.strip()
+    return html.unescape(s).strip()
 
+# ================== RETENTION ==================
+def cleanup_old_incidents(db):
+    now = datetime.utcnow()
+    one_month = now - timedelta(days=30)
+    two_months = now - timedelta(days=60)
 
-def map_priority_from_pred(pred):
-    # If classifier returns a probability or label, map to priority. Here we assume label.
-    return pred
+    deleted = (
+        db.query(Incident)
+        .filter(
+            or_(
+                Incident.timestamp < two_months,
+                and_(
+                    Incident.timestamp < one_month,
+                    Incident.priority.notin_(["HIGH", "CRITICAL"])
+                )
+            )
+        )
+        .delete(synchronize_session=False)
+    )
 
+    if deleted:
+        print(f"🧹 Retention cleanup removed {deleted} old incidents")
 
+# ================== MAIN ==================
 def run_once():
     init_db()
     db = SessionLocal()
+
     try:
+        cleanup_old_incidents(db)
+
         for feed_url in FEEDS:
             try:
-                f = feedparser.parse(feed_url)
+                feed = feedparser.parse(feed_url)
             except Exception as e:
-                print("Feed parse failed:", feed_url, e)
+                print("Feed error:", feed_url, e)
                 continue
 
-            for entry in f.entries[:30]:
-                title = normalize_text(entry.get("title") or entry.get("summary") or "")
-                summary = normalize_text(entry.get("summary") or entry.get("description") or "")
+            for entry in feed.entries[:25]:
+                title = clean_text(entry.get("title"))
+                summary = clean_text(entry.get("summary") or entry.get("description"))
                 link = entry.get("link")
                 ext_id = entry.get("id") or link
-                published = entry.get("published") or entry.get("updated") or None
-                ts = None
-                if published:
-                    try:
-                        ts = datetime(*entry.published_parsed[:6])
-                    except Exception:
-                        try:
-                            ts = datetime.strptime(published, "%Y-%m-%dT%H:%M:%S")
-                        except Exception:
-                            ts = datetime.utcnow()
-                else:
-                    ts = datetime.utcnow()
 
-                # Basic deduplication: skip if same external id & close timestamp exists
+                if not ext_id:
+                    continue
+
+                # Deduplication
                 exists = (
                     db.query(Incident)
                     .filter(Incident.external_id == ext_id)
@@ -103,26 +108,22 @@ def run_once():
                 if exists:
                     continue
 
-                priority = None
-                useful_score = 0.0
-                anomaly_score = 0.0
-                model_version = None
+                # Timestamp
+                ts = datetime.utcnow()
+                try:
+                    if entry.get("published_parsed"):
+                        ts = datetime(*entry.published_parsed[:6])
+                except Exception:
+                    pass
 
-                # If we have a classifier + vectorizer, predict priority and anomaly
+                # Optional ML-based priority prediction
+                priority = None
                 try:
                     if clf and vec:
                         X = vec.transform([summary or title])
-                        pred = clf.predict(X)[0]
-                        priority = map_priority_from_pred(pred)
-                        model_version = getattr(clf, "version", None)
-                    if iforest and vec:
-                        X2 = vec.transform([summary or title])
-                        # decision_function: higher means more normal -> invert
-                        raw = float(iforest.decision_function(X2)[0])
-                        # map raw [-1..1] to anomaly_score [0..1]
-                        anomaly_score = max(0.0, min(1.0, (1 - ((raw + 1) / 2))))
+                        priority = clf.predict(X)[0]
                 except Exception:
-                    priority = None
+                    pass
 
                 inc = Incident(
                     source=feed_url,
@@ -136,12 +137,9 @@ def run_once():
                     category=None,
                     sector=None,
                     geo_scope="Global",
-                    is_useful=True,
-                    useful_score=useful_score,
-                    anomaly_score=anomaly_score,
-                    model_version=model_version,
-                    status="Observed",
+                    is_mitigated=False,
                 )
+
                 try:
                     db.add(inc)
                     db.commit()
@@ -149,8 +147,11 @@ def run_once():
                     db.rollback()
                 except Exception as e:
                     db.rollback()
-                    print("Failed to store incident:", e)
-                # small delay so some feeds tolerate it
+                    print("Insert failed:", e)
+
                 time.sleep(0.05)
+
+        print("Collector run completed.")
+
     finally:
         db.close()
