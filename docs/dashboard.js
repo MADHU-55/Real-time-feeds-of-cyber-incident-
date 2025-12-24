@@ -1,259 +1,190 @@
 /* ===============================
-   CyberNow Dashboard JS (CLEANED + FIXED)
+   CyberNow Dashboard JS (DEMO + LIVE SAFE)
    =============================== */
 
 let trendChart = null;
 let sectorChart = null;
 
 console.log("✅ dashboard.js loaded");
-console.log("sectorChart canvas:", document.getElementById("sectorChart"));
-async function loadDashboard() {
-const demoBanner = document.getElementById("demoBanner");
 
-// Detect demo mode (GitHub Pages OR local file)
-const DEMO_MODE =
-  location.protocol === "file:" ||
-  location.hostname.includes("github.io");
+function isDemoMode() {
+  return (
+    location.protocol === "file:" ||
+    location.hostname.includes("github.io")
+  );
+}
 
-if (DEMO_MODE && demoBanner) {
-  demoBanner.style.display = "block";
-}
-}
-async function loadDashboard() {
-  const DEMO_MODE = location.hostname.includes("github.io");
-
-  if (DEMO_MODE) {
-    renderDemoData();
-    return;
-  }
-}
+/* ---------- DEMO DATA ---------- */
 function renderDemoData() {
-  document.getElementById("total").textContent = 12;
-  document.getElementById("critical").textContent = 3;
-  document.getElementById("sectors").textContent = 5;
-  document.getElementById("mitigated").textContent = 7;
+  const el = id => document.getElementById(id);
 
-  const feed = document.getElementById("liveFeedList");
-  feed.innerHTML = `
-    <div class="news-item">
-      <strong>Ransomware attack targets financial sector</strong>
-      <span class="severity critical">CRITICAL</span>
-      <div>Simulated incident for demo purposes</div>
-    </div>
-  `;
-}
+  if (el("demoBanner")) el("demoBanner").style.display = "block";
 
-async function loadDashboard() {
-  try {
-    /* ---------- SAFE ELEMENT GETTERS ---------- */
-    const el = id => document.getElementById(id);
+  el("total").textContent = 12;
+  el("critical").textContent = 3;
+  el("sectors").textContent = 5;
+  el("mitigated").textContent = 7;
 
-    const total = el("total") || el("totalThreatsToday");
-    const critical = el("critical") || el("criticalIncidents");
-    const sectors = el("sectors") || el("affectedSectors");
-    const mitigated = el("mitigated") || el("threatsMitigated");
-    const feed = el("feed") || el("liveFeedList");
-
-    /* ---------- SUMMARY (SAFE FIELDS ONLY) ---------- */
-    const summaryRes = await fetch("/api/dashboard/summary");
-    if (!summaryRes.ok) throw new Error("Summary API failed");
-    const summary = await summaryRes.json();
-
-    if (total) total.textContent = summary.total_threats_today ?? 0;
-    if (mitigated) mitigated.textContent = summary.threats_mitigated ?? 0;
-
-    /* ---------- LIVE FEED + FRONTEND COUNTS ---------- */
-    if (feed) {
-      const feedRes = await fetch("/api/incidents/live");
-      if (!feedRes.ok) throw new Error("Live feed API failed");
-      const feedData = await feedRes.json();
-
-      feed.innerHTML = "";
-
-      let criticalCount = 0;
-      const sectorCounts = {};
-
-      feedData.forEach(item => {
-        const priority = (item.priority || "LOW").toUpperCase();
-        const sectorRaw = (item.sector || "").trim();
-
-        /* ======= ✅ REQUIRED FIX: SECTOR FALLBACK ======= */
-        let sector =
-          sectorRaw &&
-          sectorRaw.toLowerCase() !== "unknown" &&
-          sectorRaw.toLowerCase() !== "general"
-            ? sectorRaw
-            : null;
-
-        if (!sector) {
-          const text = `${item.title || ""} ${item.summary || ""}`.toLowerCase();
-
-          if (text.includes("bank") || text.includes("finance")) sector = "Finance";
-          else if (text.includes("hospital") || text.includes("health")) sector = "Healthcare";
-          else if (text.includes("university") || text.includes("college") || text.includes("education")) sector = "Education";
-          else if (text.includes("government") || text.includes("ministry")) sector = "Government";
-          else if (text.includes("cloud") || text.includes("aws") || text.includes("azure") || text.includes("gcp")) sector = "Cloud";
-          else if (text.includes("telecom") || text.includes("network")) sector = "Telecom";
-          else sector = "Other";
-        }
-        /* ======= END FIX ======= */
-
-        if (priority === "HIGH" || priority === "CRITICAL") {
-          criticalCount++;
-        }
-
-        sectorCounts[sector] = (sectorCounts[sector] || 0) + 1;
-
-        const url = item.url || "#";
-
-        feed.innerHTML += `
-          <div class="news-item" style="cursor:pointer"
-               onclick="window.open('${url}', '_blank')">
-            <div class="timestamp">
-              ${item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
-            </div>
-            <strong>${item.title || "Untitled Incident"}</strong>
-            <span class="severity ${priority.toLowerCase()}">
-              ${priority}
-            </span>
-            <div>${item.summary || ""}</div>
-          </div>
-        `;
-      });
-
-      /* ---------- TOP CARDS (FRONTEND SOURCE OF TRUTH) ---------- */
-      if (critical) critical.textContent = criticalCount;
-
-      /* ---------- CRITICAL ALERT BANNER ---------- */
-      const banner = document.getElementById("criticalAlertBanner");
-      const bannerText = document.getElementById("criticalAlertText");
-
-      if (banner && bannerText) {
-        if (criticalCount > 0) {
-          banner.style.display = "block";
-          bannerText.textContent =
-            `${criticalCount} HIGH / CRITICAL incidents detected in live feed`;
-        } else {
-          banner.style.display = "none";
-        }
-      }
-
-      if (sectors) sectors.textContent = Object.keys(sectorCounts).length;
-
-      /* ---------- AFFECTED SECTORS GRAPH ---------- */
-      const sectorCanvas = el("sectorChart");
-      const labels = Object.keys(sectorCounts);
-      const values = Object.values(sectorCounts);
-
-      if (sectorCanvas && labels.length > 0) {
-        if (sectorChart) sectorChart.destroy();
-
-        sectorChart = new Chart(sectorCanvas, {
-          type: "bar",
-          data: {
-            labels,
-            datasets: [{
-              label: "Incidents",
-              data: values,
-              backgroundColor: "#4FD1C5"
-            }]
-          },
-          options: {
-            indexAxis: "y",
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: { x: { beginAtZero: true } }
-          }
-        });
-      }
+  const demoFeed = [
+    {
+      title: "Ransomware attack targets financial sector",
+      summary: "Simulated incident for demo purposes",
+      priority: "CRITICAL",
+      sector: "Finance",
+      timestamp: new Date().toISOString(),
+      url: "#"
+    },
+    {
+      title: "Phishing campaign impersonates government emails",
+      summary: "Credential harvesting detected",
+      priority: "HIGH",
+      sector: "Government",
+      timestamp: new Date().toISOString(),
+      url: "#"
+    },
+    {
+      title: "Malware found in npm package",
+      summary: "Supply-chain compromise",
+      priority: "MEDIUM",
+      sector: "Technology",
+      timestamp: new Date().toISOString(),
+      url: "#"
     }
+  ];
 
-    /* ---------- THREAT TRENDS ---------- */
-    const trendCanvas = el("trendChart");
-    if (trendCanvas) {
-      const trendRes = await fetch("/api/analytics/trends");
-      if (!trendRes.ok) throw new Error("Trends API failed");
-      const trendData = await trendRes.json();
+  const feed = el("liveFeedList");
+  feed.innerHTML = "";
 
-      if (trendChart) trendChart.destroy();
+  let sectorCounts = {};
+  let criticalCount = 0;
 
-      trendChart = new Chart(trendCanvas, {
-        type: "line",
-        data: {
-          labels: trendData.labels || [],
-          datasets: [
-            {
-              label: "Detected",
-              data: trendData.datasets?.[0]?.values || [],
-              fill: true,
-              borderColor: "#3182CE",
-              backgroundColor: "rgba(49,130,206,0.25)",
-              tension: 0.3
-            },
-            {
-              label: "Mitigated",
-              data: trendData.datasets?.[1]?.values || [],
-              fill: true,
-              borderColor: "#38A169",
-              backgroundColor: "rgba(56,161,105,0.25)",
-              tension: 0.3
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false
-        }
-      });
-    }
+  demoFeed.forEach(item => {
+    const priority = item.priority.toUpperCase();
 
-  } catch (err) {
-    console.error("❌ Dashboard load failed:", err);
-  }
-}
+    if (priority === "HIGH" || priority === "CRITICAL") criticalCount++;
 
-/* ---------- PASSWORD CHECK (SAFE) ---------- */
-async function checkPassword(event) {
-  event.preventDefault();
+    sectorCounts[item.sector] = (sectorCounts[item.sector] || 0) + 1;
 
-  const passwordInput =
-    document.getElementById("passwordInput") ||
-    document.getElementById("password");
+    feed.innerHTML += `
+      <div class="news-item">
+        <strong>${item.title}</strong>
+        <span class="severity ${priority.toLowerCase()}">${priority}</span>
+        <div>${item.summary}</div>
+      </div>
+    `;
+  });
 
-  const result =
-    document.getElementById("passwordResult") ||
-    document.getElementById("pwdResult");
+  /* ---------- Critical Banner ---------- */
+  const banner = el("criticalAlertBanner");
+  const bannerText = el("criticalAlertText");
 
-  if (!passwordInput || !result) return;
-
-  const password = passwordInput.value.trim();
-  if (!password) {
-    result.textContent = "Please enter a password";
-    return;
+  if (banner && bannerText && criticalCount > 0) {
+    banner.style.display = "block";
+    bannerText.textContent =
+      `${criticalCount} HIGH / CRITICAL incidents detected (Demo Mode)`;
   }
 
-  result.textContent = "Checking...";
+  /* ---------- Affected Sectors Chart ---------- */
+  const sectorCanvas = el("sectorChart");
 
-  try {
-    const res = await fetch("/api/security/password-check", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password })
+  if (sectorCanvas) {
+    sectorChart = new Chart(sectorCanvas, {
+      type: "bar",
+      data: {
+        labels: Object.keys(sectorCounts),
+        datasets: [{
+          data: Object.values(sectorCounts),
+          backgroundColor: "#4FD1C5"
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } }
+      }
     });
+  }
+}
 
-    const data = await res.json();
+/* ---------- LIVE MODE ---------- */
+async function loadLiveData() {
+  const el = id => document.getElementById(id);
 
-    result.textContent = data.pwned
-      ? `⚠ Found ${data.count} times in breaches`
-      : "✅ Password not found in known breaches";
-  } catch {
-    result.textContent = "Network error";
+  const total = el("total");
+  const critical = el("critical");
+  const sectors = el("sectors");
+  const mitigated = el("mitigated");
+  const feed = el("liveFeedList");
+
+  const summaryRes = await fetch("/api/dashboard/summary");
+  const summary = await summaryRes.json();
+
+  total.textContent = summary.total_threats_today ?? 0;
+  mitigated.textContent = summary.threats_mitigated ?? 0;
+
+  const feedRes = await fetch("/api/incidents/live");
+  const feedData = await feedRes.json();
+
+  feed.innerHTML = "";
+
+  let criticalCount = 0;
+  let sectorCounts = {};
+
+  feedData.forEach(item => {
+    const priority = (item.priority || "LOW").toUpperCase();
+
+    if (priority === "HIGH" || priority === "CRITICAL") criticalCount++;
+
+    const sector = item.sector || "Other";
+    sectorCounts[sector] = (sectorCounts[sector] || 0) + 1;
+
+    feed.innerHTML += `
+      <div class="news-item">
+        <strong>${item.title}</strong>
+        <span class="severity ${priority.toLowerCase()}">${priority}</span>
+        <div>${item.summary || ""}</div>
+      </div>
+    `;
+  });
+
+  critical.textContent = criticalCount;
+  sectors.textContent = Object.keys(sectorCounts).length;
+
+  const sectorCanvas = el("sectorChart");
+
+  if (sectorCanvas) {
+    if (sectorChart) sectorChart.destroy();
+
+    sectorChart = new Chart(sectorCanvas, {
+      type: "bar",
+      data: {
+        labels: Object.keys(sectorCounts),
+        datasets: [{
+          data: Object.values(sectorCounts),
+          backgroundColor: "#4FD1C5"
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } }
+      }
+    });
   }
 }
 
 /* ---------- INIT ---------- */
 document.addEventListener("DOMContentLoaded", () => {
-  loadDashboard();
-  setInterval(loadDashboard, 60000);
+  if (isDemoMode()) {
+    console.log("🟡 Running in DEMO MODE");
+    renderDemoData();
+  } else {
+    console.log("🟢 Running in LIVE MODE");
+    loadLiveData();
+    setInterval(loadLiveData, 60000);
+  }
 });
